@@ -262,8 +262,8 @@ describe("handler", () => {
 
   it.each([
     [false, false], [false, true], [true, false], [true, true],
-  ])("blocks runbook execution with RAG=%s and tools=%s", async (ragEnabled, toolCallingEnabled) => {
-    for (const fields of [{}, { system_prompt: "" }, { system_prompt: null }, { history_turns: 0 }, { history_turns: null }]) {
+  ])("rejects disabled or invalid runbook requests with RAG=%s and tools=%s", async (ragEnabled, toolCallingEnabled) => {
+    for (const fields of [...(ragEnabled ? [] : [{}]), { system_prompt: "" }, { system_prompt: null }, { history_turns: 0 }, { history_turns: null }]) {
       await expectInvalidBeforeDownstream(
         { prompt: "hello", mode: "runbook", ...fields }, [], { ragEnabled, toolCallingEnabled },
       );

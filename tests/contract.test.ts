@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHandler } from "../src-ts/handler";
+import { loadConfig } from "../src-ts/config";
+import { runbookCorpus } from "../src-ts/runbookCorpus";
+import { RUNBOOK_LIMITS } from "../src-ts/runbookContext";
 import {
   CHAT_REQUEST_ALLOWED_FIELDS,
   CHAT_REQUEST_LIMITS,
@@ -56,6 +59,8 @@ interface JsonSchema {
   maxLength?: number;
   minimum?: number;
   maximum?: number;
+  maxItems?: number;
+  items?: JsonSchema;
 }
 
 function terraformRoutes(): string[] {
@@ -129,6 +134,17 @@ function validateSchema(value: unknown, schema: JsonSchema): string[] {
 
   if (resolved.type === "string" && typeof value !== "string") {
     errors.push("expected string");
+  }
+
+  if (resolved.type === "array") {
+    if (!Array.isArray(value)) return ["expected array"];
+    if (resolved.maxItems !== undefined && value.length > resolved.maxItems) errors.push("too many items");
+    if (resolved.items) {
+      const items = resolved.items;
+      value.forEach((item, index) => {
+        errors.push(...validateSchema(item, items).map((error) => `${index}: ${error}`));
+      });
+    }
   }
 
   if (resolved.type === "integer" && (!Number.isInteger(value))) {
@@ -210,11 +226,11 @@ describe("OpenAPI contract", () => {
     );
   });
 
-  it("documents the reserved runbook mode and its incompatible fields", () => {
+  it("documents gated runbook mode and its incompatible fields", () => {
     const schema = openApi.components.schemas.ChatRequest;
     expect(schema.properties?.mode).toMatchObject({ type: "string", const: "runbook" });
-    expect(schema.properties?.mode.description).toContain("not available yet");
-    expect(schema.properties?.mode.description).toContain("even when RAG_ENABLED is true");
+    expect(schema.properties?.mode.description).toContain("only when RAG_ENABLED is true");
+    expect(schema.properties?.mode.description).toContain("otherwise HTTP 400");
     expect(schema.allOf).toEqual([
       { not: { required: ["mode", "system_prompt"] } },
       { not: { required: ["mode", "history_turns"] } },
@@ -245,7 +261,7 @@ describe("OpenAPI contract", () => {
     const response = await createHandler({ config: {
       chatTable: "mock", awsRegion: "eu-west-1", environment: "test", modelId: "mock",
       historyTurns: 10, maxContextChars: 24000, retentionDays: 7, maxTokens: 1024,
-      temperature: 0.2, ragEnabled: true,
+      temperature: 0.2, ragEnabled: false,
     } })({
       rawPath: "/chat",
       requestContext: { http: { method: "POST" }, authorizer: { jwt: { claims: { sub: "user-a" } } } },
@@ -254,6 +270,55 @@ describe("OpenAPI contract", () => {
     expect(response.statusCode).toBe(400);
     expect(JSON.parse(response.body)).toEqual({ error: "Invalid chat request" });
     expect(validateSchema(JSON.parse(response.body), jsonResponseSchema("/chat", "post", 400))).toEqual([]);
+  });
+
+  it.each(["generated", "abstention", "regular"])("validates the %s response against the success schema", async (mode) => {
+    const chunk = runbookCorpus[0];
+    const converse = vi.fn(async () => ({
+      $metadata: {}, stopReason: "end_turn" as const,
+      usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+      output: { message: { role: "assistant" as const, content: [{ text: "Mock guidance" }] } },
+    }));
+    const response = await createHandler({
+      config: { ...loadConfig({ CHAT_TABLE: "mock" }), ragEnabled: true },
+      repository: { queryHistoryTurns: async () => [], saveTurn: async () => undefined },
+      bedrockClient: { converse },
+      runbookRetriever: { retrieve: () => mode === "abstention" ? [] : [chunk] },
+    })({
+      rawPath: "/chat",
+      requestContext: { http: { method: "POST" }, authorizer: { jwt: { claims: { sub: "user-a" } } } },
+      body: JSON.stringify({ prompt: "SQS backlog", ...(mode !== "regular" ? { mode: "runbook" } : {}) }),
+    });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(validateSchema(body, jsonResponseSchema("/chat", "post", 200))).toEqual([]);
+    if (mode === "regular") expect(body).not.toHaveProperty("sources");
+    else expect(body.sources).toEqual(mode === "abstention" ? [] : [{
+      documentId: chunk.documentId, chunkId: chunk.chunkId, title: chunk.title,
+      section: chunk.section, version: chunk.version,
+    }]);
+    if (mode === "abstention") {
+      expect(body.usage).toEqual({});
+      expect(body).not.toHaveProperty("stopReason");
+      expect(converse).not.toHaveBeenCalled();
+    }
+  });
+
+  it("documents supplied reference metadata and enforces the source array shape", () => {
+    const schema = openApi.components.schemas.ChatSuccessResponse.properties?.sources;
+    expect(schema).toBeDefined();
+    expect(schema?.maxItems).toBe(RUNBOOK_LIMITS.maxChunks);
+    expect(schema?.description).toContain("Present only for runbook responses");
+    expect(schema?.description).toContain("not proof that every sentence has been independently verified");
+    const source = { documentId: "doc", chunkId: "doc.chunk", title: "Title", section: "Section", version: "1" };
+    expect(validateSchema([source], schema!)).toEqual([]);
+    for (const key of Object.keys(source)) {
+      const incomplete = Object.fromEntries(Object.entries(source).filter(([field]) => field !== key));
+      expect(validateSchema([incomplete], schema!).length).toBeGreaterThan(0);
+    }
+    for (const invalid of [{}, [null], [{ ...source, version: 1 }], [{ ...source, url: "invented" }], Array(4).fill(source)]) {
+      expect(validateSchema(invalid, schema!).length).toBeGreaterThan(0);
+    }
   });
 
   it("documents temperature and top_p as mutually exclusive", () => {

@@ -58,10 +58,20 @@ export interface ChatHistoryTurn {
   response: string;
 }
 
+export interface RunbookSource {
+  documentId: string;
+  chunkId: string;
+  title: string;
+  section: string;
+  version: string;
+}
+
 export interface ChatSuccessResponseBody {
   session_id: string;
   timestamp: number;
   response: string;
   usage: unknown;
   stopReason: string | undefined;
+  /** Reference excerpts supplied to the model; present only for runbook mode. */
+  sources?: RunbookSource[];
 }

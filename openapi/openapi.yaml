@@ -41,7 +41,7 @@ components:
         mode:
           type: string
           const: runbook
-          description: Reserved runbook mode. Execution is not available yet and returns HTTP 400 even when RAG_ENABLED is true. system_prompt and history_turns must be omitted. Omit mode for regular chat.
+          description: Grounded Runbook guidance, available only when RAG_ENABLED is true (disabled by default; otherwise HTTP 400). system_prompt and history_turns must be omitted. Uses no history or tools. Server limits are 3 whole chunks, 3000 evidence-text characters and 12000 combined model-input characters including instructions and source labels (UTF-16 code units). Omit mode for regular chat.
         prompt:
           type: string
           description: Leading and trailing whitespace is trimmed before validation; the prompt must contain at least one non-whitespace character.
@@ -83,6 +83,21 @@ components:
         totalTokens:
           type: integer
           minimum: 0
+    RunbookSource:
+      type: object
+      required: [documentId, chunkId, title, section, version]
+      additionalProperties: false
+      properties:
+        documentId:
+          type: string
+        chunkId:
+          type: string
+        title:
+          type: string
+        section:
+          type: string
+        version:
+          type: string
     ChatSuccessResponse:
       type: object
       required: [session_id, timestamp, response, usage]
@@ -95,10 +110,17 @@ components:
         response:
           type: string
         usage:
-          description: Token usage aggregated across model calls when Tool Calling is enabled.
+          description: Token usage aggregated across model calls when Tool Calling is enabled. Empty object for a Runbook abstention without a model call.
           $ref: "#/components/schemas/Usage"
         stopReason:
           type: string
+          description: Model stop reason when available; omitted for a Runbook abstention without a model call.
+        sources:
+          type: array
+          maxItems: 3
+          description: Present only for runbook responses. Metadata of actual reference excerpts supplied to the model, not proof that every sentence has been independently verified. Empty for a safe abstention when no qualifying whole excerpts fit the budgets. Successful answers and abstentions are saved to the authenticated user's session.
+          items:
+            $ref: "#/components/schemas/RunbookSource"
     ErrorResponse:
       type: object
       required: [error]
