@@ -6,6 +6,7 @@ import { createHandler } from "../src-ts/handler";
 import {
   CHAT_REQUEST_ALLOWED_FIELDS,
   CHAT_REQUEST_LIMITS,
+  parseJsonBody,
 } from "../src-ts/validation";
 
 const root = process.cwd();
@@ -47,6 +48,7 @@ interface JsonSchema {
   const?: unknown;
   required?: string[];
   not?: JsonSchema;
+  allOf?: JsonSchema[];
   additionalProperties?: boolean | JsonSchema;
   properties?: Record<string, JsonSchema>;
   pattern?: string;
@@ -96,6 +98,13 @@ function validateSchema(value: unknown, schema: JsonSchema): string[] {
     }
 
     const record = value as Record<string, unknown>;
+    // Check the required-field exclusions used by ChatRequest.
+    for (const exclusion of [resolved, ...(resolved.allOf ?? [])]) {
+      const forbiddenTogether = exclusion.not?.required;
+      if (forbiddenTogether?.every((key) => key in record)) {
+        errors.push(`incompatible fields: ${forbiddenTogether.join(", ")}`);
+      }
+    }
     for (const required of resolved.required ?? []) {
       if (!(required in record)) {
         errors.push(`missing ${required}`);
@@ -199,6 +208,52 @@ describe("OpenAPI contract", () => {
     expect(Object.keys(requestSchema.properties ?? {}).sort()).toEqual(
       [...CHAT_REQUEST_ALLOWED_FIELDS].sort(),
     );
+  });
+
+  it("documents the reserved runbook mode and its incompatible fields", () => {
+    const schema = openApi.components.schemas.ChatRequest;
+    expect(schema.properties?.mode).toMatchObject({ type: "string", const: "runbook" });
+    expect(schema.properties?.mode.description).toContain("not available yet");
+    expect(schema.properties?.mode.description).toContain("even when RAG_ENABLED is true");
+    expect(schema.allOf).toEqual([
+      { not: { required: ["mode", "system_prompt"] } },
+      { not: { required: ["mode", "history_turns"] } },
+    ]);
+  });
+
+  it.each([
+    [{}, true],
+    [{ system_prompt: "", history_turns: 0 }, true],
+    [{ mode: "runbook" }, true],
+    [{ mode: "runbook", system_prompt: "" }, false],
+    [{ mode: "runbook", system_prompt: null }, false],
+    [{ mode: "runbook", history_turns: 0 }, false],
+    [{ mode: "runbook", history_turns: null }, false],
+    ...[null, "", " ", "chat", "RUNBOOK", " runbook ", 1, true, [], {}].map((mode) => [{ mode }, false]),
+  ])("aligns mode parsing with the request schema for %j", (fields, valid) => {
+    const body = { prompt: "hello", ...(fields as object) };
+    expect(validateSchema(body, openApi.components.schemas.ChatRequest).length === 0).toBe(valid);
+    const parseBody = () => parseJsonBody({ body: JSON.stringify(body) });
+    if (valid) {
+      expect(parseBody).not.toThrow();
+    } else {
+      expect(parseBody).toThrow("Invalid chat request");
+    }
+  });
+
+  it("validates the blocked runbook response against the error schema", async () => {
+    const response = await createHandler({ config: {
+      chatTable: "mock", awsRegion: "eu-west-1", environment: "test", modelId: "mock",
+      historyTurns: 10, maxContextChars: 24000, retentionDays: 7, maxTokens: 1024,
+      temperature: 0.2, ragEnabled: true,
+    } })({
+      rawPath: "/chat",
+      requestContext: { http: { method: "POST" }, authorizer: { jwt: { claims: { sub: "user-a" } } } },
+      body: JSON.stringify({ prompt: "hello", mode: "runbook" }),
+    });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ error: "Invalid chat request" });
+    expect(validateSchema(JSON.parse(response.body), jsonResponseSchema("/chat", "post", 400))).toEqual([]);
   });
 
   it("documents temperature and top_p as mutually exclusive", () => {

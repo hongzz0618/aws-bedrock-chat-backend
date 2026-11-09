@@ -65,6 +65,11 @@ export async function handleChat(
     const userId = extractAuthenticatedUserId(event);
     const payload = parseJsonBody(event);
 
+    // Enable runbook execution only after the RAG implementation is complete.
+    if (payload.mode === "runbook") {
+      throw new InvalidChatRequestError();
+    }
+
     const sessionId =
       optionalTrimmedString(payload.session_id, {
         maxLength: CHAT_REQUEST_LIMITS.sessionIdMaxLength,

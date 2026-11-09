@@ -11,6 +11,7 @@ export interface AppConfig {
   maxTokens: number;
   temperature: number;
   toolCallingEnabled?: boolean;
+  ragEnabled?: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -25,6 +26,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxTokens: parseIntegerInRange(env.MAX_TOKENS, 1024, 1, 4096),
     temperature: parseNumberInRange(env.TEMPERATURE, 0.2, 0, 1),
     toolCallingEnabled: env.TOOL_CALLING_ENABLED === "true",
+    ragEnabled: env.RAG_ENABLED === "true",
   };
 }
 

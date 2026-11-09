@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildBoundedContextMessages } from "../src-ts/chatService";
 import { loadConfig } from "../src-ts/config";
+import { InvalidChatRequestError, parseJsonBody } from "../src-ts/validation";
 
 function messageTexts(result: ReturnType<typeof buildBoundedContextMessages>): string[] {
   return result.messages.map((message) => message.content?.[0]?.text ?? "");
@@ -82,6 +83,30 @@ describe("buildBoundedContextMessages", () => {
 
     expect(result.truncated).toBe(false);
     expect(messageTexts(result)).toEqual(["current"]);
+  });
+});
+
+describe("runbook request configuration and validation", () => {
+  it.each([undefined, "", "false", "TRUE", " true ", "1"])("defaults RAG to false for %s", (value) => {
+    expect(loadConfig({ RAG_ENABLED: value }).ragEnabled).toBe(false);
+  });
+
+  it("enables RAG only for exact true", () => {
+    expect(loadConfig({ RAG_ENABLED: "true" }).ragEnabled).toBe(true);
+  });
+
+  it("parses a valid runbook shape before the execution guard", () => {
+    const body = { prompt: "SQS backlog", mode: "runbook" };
+    expect(parseJsonBody({ body: JSON.stringify(body) })).toEqual(body);
+  });
+
+  it.each([
+    { system_prompt: "" }, { system_prompt: null }, { system_prompt: "brief" },
+    { history_turns: 0 }, { history_turns: null }, { history_turns: "" },
+    { system_prompt: "", history_turns: 0 },
+  ])("rejects forbidden runbook fields %j before the execution guard", (fields) => {
+    expect(() => parseJsonBody({ body: JSON.stringify({ prompt: "hello", mode: "runbook", ...fields }) }))
+      .toThrow(InvalidChatRequestError);
   });
 });
 

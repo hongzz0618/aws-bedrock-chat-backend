@@ -17,6 +17,7 @@ export const CHAT_REQUEST_LIMITS = {
 } as const;
 
 export const CHAT_REQUEST_ALLOWED_FIELDS = [
+  "mode",
   "prompt",
   "session_id",
   "system_prompt",
@@ -61,6 +62,14 @@ export function parseJsonBody(event: HttpEvent): ChatRequestBody {
     if (!CHAT_REQUEST_ALLOWED_FIELD_SET.has(key)) {
       throw new InvalidChatRequestError();
     }
+  }
+
+  if ("mode" in parsed && parsed.mode !== "runbook") {
+    throw new InvalidChatRequestError();
+  }
+
+  if (parsed.mode === "runbook" && ("system_prompt" in parsed || "history_turns" in parsed)) {
+    throw new InvalidChatRequestError();
   }
 
   return parsed;

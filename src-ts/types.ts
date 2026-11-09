@@ -30,6 +30,7 @@ export interface HealthResponseBody {
 }
 
 export interface ChatRequestBody {
+  mode?: unknown;
   prompt?: unknown;
   session_id?: unknown;
   system_prompt?: unknown;
