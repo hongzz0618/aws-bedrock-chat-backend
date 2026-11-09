@@ -32,7 +32,16 @@ components:
       additionalProperties: false
       not:
         required: [temperature, top_p]
+      allOf:
+        - not:
+            required: [mode, system_prompt]
+        - not:
+            required: [mode, history_turns]
       properties:
+        mode:
+          type: string
+          const: runbook
+          description: Reserved runbook mode. Execution is not available yet and returns HTTP 400 even when RAG_ENABLED is true. system_prompt and history_turns must be omitted. Omit mode for regular chat.
         prompt:
           type: string
           description: Leading and trailing whitespace is trimmed before validation; the prompt must contain at least one non-whitespace character.

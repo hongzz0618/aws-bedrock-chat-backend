@@ -35,7 +35,7 @@ function lambda(id = "lambda-1"): ContentBlock {
   };
 }
 
-function setup(responses: ConverseCommandOutput[], enabled = true, nowMs = () => 1_710_000_000_000) {
+function setup(responses: ConverseCommandOutput[], enabled = true, nowMs = () => 1_710_000_000_000, ragEnabled = false) {
   const converse = vi.fn(
     async (_request: ConverseCommandInput, _options?: { abortSignal?: AbortSignal }): Promise<ConverseCommandOutput> => {
       throw new Error("Unexpected Converse call");
@@ -47,7 +47,7 @@ function setup(responses: ConverseCommandOutput[], enabled = true, nowMs = () =>
     saveTurn: vi.fn(async () => undefined),
   };
   const handler = createHandler({
-    config: loadConfig({ CHAT_TABLE: "mock-chat", TOOL_CALLING_ENABLED: enabled ? "true" : undefined }),
+    config: loadConfig({ CHAT_TABLE: "mock-chat", TOOL_CALLING_ENABLED: enabled ? "true" : undefined, RAG_ENABLED: String(ragEnabled) }),
     bedrockClient: { converse },
     repository,
     generateTurnId: () => "turn-1",
@@ -66,11 +66,11 @@ afterEach(() => {
 });
 
 describe("Converse Tool Calling through the chat handler", () => {
-  it("matches a single tool result, marks the final answer and saves only the completed turn", async () => {
+  it.each([false, true])("matches tool results and saves the completed turn with RAG=%s", async (ragEnabled) => {
     const toolResponse = output("tool_use", [{ text: "Checking" }, queue()]);
     const final = output("end_turn", [{ text: "Queue has 12 messages." }, { text: "Two are in flight." }],
       { inputTokens: 90, outputTokens: 18, totalTokens: undefined });
-    const { handler, converse, repository } = setup([toolResponse, final]);
+    const { handler, converse, repository } = setup([toolResponse, final], true, undefined, ragEnabled);
 
     const response = await handler(event);
     const answer = simulationNotice + "\n\nQueue has 12 messages.\nTwo are in flight.";

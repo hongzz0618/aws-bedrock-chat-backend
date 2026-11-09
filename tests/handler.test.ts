@@ -82,6 +82,7 @@ function createMockBedrockClient(responseText = "mock response") {
 async function expectInvalidBeforeDownstream(
   body: object,
   sensitiveValues: string[] = [],
+  flags: { ragEnabled?: boolean; toolCallingEnabled?: boolean } = {},
 ): Promise<void> {
   const consoleLog = vi.spyOn(console, "log").mockImplementation(() => undefined);
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -89,7 +90,7 @@ async function expectInvalidBeforeDownstream(
   const bedrockClient = createMockBedrockClient();
 
   const response = await createHandler({
-    config: baseConfig,
+    config: { ...baseConfig, ...flags },
     repository,
     bedrockClient,
   })(chatEvent(body));
@@ -251,6 +252,44 @@ describe("handler", () => {
 
     expect(response.statusCode).toBe(401);
     expect(JSON.parse(response.body)).toEqual({ error: "Unauthorized" });
+  });
+
+  it.each([null, "", " ", "chat", "RUNBOOK", " runbook ", 1, true, [], {}])(
+    "rejects invalid mode %j before downstream calls", async (mode) => {
+      await expectInvalidBeforeDownstream({ prompt: "hello", mode });
+    },
+  );
+
+  it.each([
+    [false, false], [false, true], [true, false], [true, true],
+  ])("blocks runbook execution with RAG=%s and tools=%s", async (ragEnabled, toolCallingEnabled) => {
+    for (const fields of [{}, { system_prompt: "" }, { system_prompt: null }, { history_turns: 0 }, { history_turns: null }]) {
+      await expectInvalidBeforeDownstream(
+        { prompt: "hello", mode: "runbook", ...fields }, [], { ragEnabled, toolCallingEnabled },
+      );
+    }
+  });
+
+  it("authenticates runbook requests before rejecting the mode", async () => {
+    const repository = createMockRepository();
+    const bedrockClient = createMockBedrockClient();
+    const response = await createHandler({ config: { ...baseConfig, ragEnabled: true }, repository, bedrockClient })(
+      unauthenticatedChatEvent({ prompt: "hello", mode: "runbook" }),
+    );
+    expect(response.statusCode).toBe(401);
+    expect(repository.queryHistoryTurns).not.toHaveBeenCalled();
+    expect(repository.saveTurn).not.toHaveBeenCalled();
+    expect(bedrockClient.converse).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("keeps user-scoped sessions with RAG=%s", async (ragEnabled) => {
+    const repository = createMockRepository();
+    const handler = createHandler({ config: { ...baseConfig, ragEnabled }, repository, bedrockClient: createMockBedrockClient() });
+    for (const user of ["user-a", "user-b"]) {
+      expect((await handler(chatEvent({ prompt: "hello", session_id: "shared" }, user))).statusCode).toBe(200);
+      expect(repository.queryHistoryTurns).toHaveBeenLastCalledWith(user, "shared", baseConfig.historyTurns);
+      expect(repository.saveTurn).toHaveBeenLastCalledWith(expect.objectContaining({ user_id: user, session_id: "shared" }));
+    }
   });
 
   it("returns 400 for POST /chat with malformed JSON", async () => {
@@ -547,7 +586,7 @@ describe("handler", () => {
     expect(JSON.parse(response.body)).toEqual({ error: "Chat request failed" });
   });
 
-  it("handles POST /chat success with mocked Bedrock and DynamoDB", async () => {
+  it.each([false, true])("handles regular chat success with RAG=%s", async (ragEnabled) => {
     const savedItems: ChatTurnItem[] = [];
     const repository: ChatRepository = {
       async queryHistoryTurns() {
@@ -590,7 +629,7 @@ describe("handler", () => {
     });
 
     const response = await createHandler({
-      config: baseConfig,
+      config: { ...baseConfig, ragEnabled },
       repository,
       bedrockClient,
       nowMs: () => 1710000000000,
