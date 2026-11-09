@@ -43,9 +43,12 @@ function tokens(value: string): string[] {
 function requestsTelemetry(query: string): boolean {
   const time = /\b(now|current|currently|latest|today|live|real[ -]time)\b/i;
   const guidance = /\b(how (?:do|can|should|to)|what should|why|troubleshoot|diagnose|investigate)\b/i;
-  // Explicit measurements take precedence, including mixed guidance/status requests.
-  const measurement = /\bhow many\b|\b(?:show|fetch|read|get|tell me)\b[^?!.;]*\b(?:my|account|production|current|live|latest)\b|\b(?:what is|what's)\b[^?!.;]*\b(?:current|live|latest)\b/i;
-  return measurement.test(query) || (time.test(query) && !guidance.test(query));
+  // Exempt modal configuration questions from the count heuristic only. Other
+  // explicit measurements still take precedence in mixed guidance/status requests.
+  const counts = query.replace(/\bhow many\b(?:(?!\bhow many\b)[^?!.;,])*?\b(?:should|can|could|must)\s+(?:i|we|you)\s+(?:allow|configure|set|use|permit|choose|plan)\b/gi, "");
+  const requestsCount = /\bhow many\b/i.test(counts);
+  const measurement = /\b(?:show|fetch|read|get|tell me)\b[^?!.;]*\b(?:my|account|production|current|live|latest)\b|\b(?:what is|what's)\b[^?!.;]*\b(?:current|live|latest)\b/i;
+  return requestsCount || measurement.test(query) || (time.test(query) && !guidance.test(query));
 }
 
 function validateCorpus(corpus: readonly RunbookChunk[]): void {

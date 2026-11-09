@@ -249,6 +249,20 @@ describe("grounded runbook chat", () => {
     if (stage === "retrieval") expect(s.converse).not.toHaveBeenCalled();
   });
 
+  it("supplies exactly the selected excerpts and derives sources from that payload", async () => {
+    const selected = [runbookCorpus[2], runbookCorpus[8]];
+    const s = setup(selected);
+    const response = await s.handler(event());
+    const request = s.converse.mock.calls[0][0];
+    const block = request.messages?.[0].content?.[1].text ?? "";
+    const excerpts = JSON.parse(block.slice(block.indexOf("\n") + 1));
+    expect(excerpts).toEqual(selected.map((c) => ({ ...sourceOf(c), text: c.text })));
+    expect(JSON.parse(response.body).sources).toEqual(excerpts.map(({ text: _text, ...source }: RunbookChunk) => source));
+    for (const other of runbookCorpus.filter((c) => !selected.includes(c))) {
+      expect(JSON.stringify(request)).not.toContain(other.text);
+    }
+  });
+
   it("uses the existing default retriever with mocked AWS dependencies", async () => {
     const s = setup();
     const handler = createHandler({
