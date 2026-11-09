@@ -17,6 +17,8 @@ import {
   type ChatRepository,
 } from "./chatRepository";
 import { jsonResponse } from "./response";
+import { runbookRetriever, type RunbookRetriever } from "./runbookRetriever";
+import { buildRunbookContext, RUNBOOK_ABSTENTION, RUNBOOK_LIMITS } from "./runbookContext";
 import { converseWithTools, ToolConversationError, type ToolConversationStats } from "./toolConversation";
 import type {
   ChatHistoryTurn,
@@ -41,6 +43,7 @@ export interface ChatDependencies {
   config?: AppConfig;
   repository?: ChatRepository;
   bedrockClient?: BedrockConverseClient;
+  runbookRetriever?: RunbookRetriever;
   generateSessionId?: () => string;
   generateTurnId?: () => string;
   nowMs?: () => number;
@@ -65,8 +68,8 @@ export async function handleChat(
     const userId = extractAuthenticatedUserId(event);
     const payload = parseJsonBody(event);
 
-    // Enable runbook execution only after the RAG implementation is complete.
-    if (payload.mode === "runbook") {
+    const isRunbook = payload.mode === "runbook";
+    if (isRunbook && !config.ragEnabled) {
       throw new InvalidChatRequestError();
     }
 
@@ -132,8 +135,15 @@ export async function handleChat(
       metrics: [{ name: "ChatRequestCount", unit: "Count", value: 1 }],
     });
 
-    const history = await repository.queryHistoryTurns(userId, sessionId, historyTurns);
-    const boundedContext = buildBoundedContextMessages(history, prompt, config.maxContextChars);
+    const groundedContext = isRunbook
+      ? buildRunbookContext(prompt, (dependencies.runbookRetriever ?? runbookRetriever).retrieve({
+        query: prompt,
+        maxChunks: RUNBOOK_LIMITS.maxChunks,
+        maxEvidenceChars: RUNBOOK_LIMITS.maxEvidenceChars,
+      }))
+      : undefined;
+    const history = isRunbook ? [] : await repository.queryHistoryTurns(userId, sessionId, historyTurns);
+    const boundedContext = groundedContext ?? buildBoundedContextMessages(history, prompt, config.maxContextChars);
 
     const bedrockRequest: ConverseCommandInput = {
       modelId,
@@ -144,7 +154,9 @@ export async function handleChat(
       },
     };
 
-    if (systemPrompt) {
+    if (groundedContext) {
+      bedrockRequest.system = groundedContext.system;
+    } else if (systemPrompt) {
       bedrockRequest.system = [{ text: systemPrompt }];
     }
 
@@ -152,7 +164,10 @@ export async function handleChat(
     let responseText: string;
     let usage: ConverseCommandOutput["usage"];
     let stopReason: ConverseCommandOutput["stopReason"];
-    if (config.toolCallingEnabled) {
+    const abstained = groundedContext?.sources.length === 0;
+    if (abstained) {
+      responseText = RUNBOOK_ABSTENTION;
+    } else if (!isRunbook && config.toolCallingEnabled) {
       toolStats = { requests: 0, rounds: 0, failures: 0, bedrockLatencyMs: 0 };
       ({ text: responseText, usage, stopReason } = await converseWithTools({
         client: bedrockClient,
@@ -173,8 +188,8 @@ export async function handleChat(
       }
       ({ usage, stopReason } = bedrockResponse);
     }
-    const bedrockLatency = toolStats?.bedrockLatencyMs ??
-      Math.max(0, (dependencies.nowMs ?? Date.now)() - bedrockStartedAt);
+    const bedrockLatency = abstained ? 0 : (toolStats?.bedrockLatencyMs ??
+      Math.max(0, (dependencies.nowMs ?? Date.now)() - bedrockStartedAt));
     const timestamp = (dependencies.nowMs ?? Date.now)();
     const turnId = (dependencies.generateTurnId ?? randomUUID)();
 
@@ -217,6 +232,7 @@ export async function handleChat(
       response: responseText,
       usage: usage ?? {},
       stopReason,
+      ...(groundedContext ? { sources: groundedContext.sources } : {}),
     };
 
     return jsonResponse(200, responseBody);

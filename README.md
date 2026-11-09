@@ -121,6 +121,19 @@ Terraform checks.
 - [AWS validation evidence](docs/evidence/) contains the earlier text-only
   deployment screenshots.
 
-This is a backend reference. RAG, streaming, and a frontend are outside the
+Runbook guidance is available with `RAG_ENABLED=true` (disabled by default) and
+`POST /chat` with `{"mode":"runbook","prompt":"How do I investigate Lambda throttling?"}`.
+Runbook requests reject `system_prompt` and `history_turns`, skip history and tools,
+and use at most 3 complete excerpts, 3000 evidence-text characters and 12000 total
+model-input characters including instructions and source labels (UTF-16 code units).
+Responses include `sources` with document/chunk IDs, title, section and version for
+the excerpts actually supplied, not independent verification of every answer claim.
+No match returns a deterministic abstention with `sources: []`, `usage: {}` and no
+`stopReason` or model call. Answers and abstentions are saved to the JWT user's
+session; later regular chat in that session can read them. Omitting `mode` retains
+regular chat behavior. Retrieval is English keyword based; mocked tests do not
+establish model grounding quality or prompt-injection resistance.
+
+This is a backend reference. Streaming and a frontend are outside the
 current implementation. DynamoDB TTL deletion is asynchronous, and budget
 alerts and request limits do not enforce a hard spending cap.
