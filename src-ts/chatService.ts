@@ -17,6 +17,7 @@ import {
   type ChatRepository,
 } from "./chatRepository";
 import { jsonResponse } from "./response";
+import { converseWithTools, ToolConversationError, type ToolConversationStats } from "./toolConversation";
 import type {
   ChatHistoryTurn,
   ChatSuccessResponseBody,
@@ -48,9 +49,11 @@ export interface ChatDependencies {
 export async function handleChat(
   event: HttpEvent,
   dependencies: ChatDependencies = {},
+  getRemainingTimeMs?: () => number,
 ): Promise<LambdaResponse> {
   const startedAt = (dependencies.nowMs ?? Date.now)();
   let telemetryContext: ChatTelemetryContext | undefined;
+  let toolStats: ToolConversationStats | undefined;
 
   try {
     const config = dependencies.config ?? loadConfig();
@@ -110,7 +113,7 @@ export async function handleChat(
       dependencies.repository ??
       new DynamoDbChatRepository(config.chatTable, config.awsRegion);
     const bedrockClient =
-      dependencies.bedrockClient ?? new AwsBedrockConverseClient(config.awsRegion);
+      dependencies.bedrockClient ?? new AwsBedrockConverseClient(config.awsRegion, config.toolCallingEnabled);
 
     telemetryContext = {
       environment: config.environment,
@@ -141,15 +144,33 @@ export async function handleChat(
     }
 
     const bedrockStartedAt = (dependencies.nowMs ?? Date.now)();
-    const bedrockResponse = await bedrockClient.converse(bedrockRequest);
-    const bedrockLatency = Math.max(0, (dependencies.nowMs ?? Date.now)() - bedrockStartedAt);
-    const responseText = extractResponseText(bedrockResponse).trim();
-    if (!responseText) {
-      throw new ChatServiceError("EmptyBedrockResponse");
+    let responseText: string;
+    let usage: ConverseCommandOutput["usage"];
+    let stopReason: ConverseCommandOutput["stopReason"];
+    if (config.toolCallingEnabled) {
+      toolStats = { requests: 0, rounds: 0, failures: 0, bedrockLatencyMs: 0 };
+      ({ text: responseText, usage, stopReason } = await converseWithTools({
+        client: bedrockClient,
+        request: bedrockRequest,
+        stats: toolStats,
+        nowMs: dependencies.nowMs,
+        getRemainingTimeMs,
+      }));
+    } else {
+      const bedrockResponse = await bedrockClient.converse(bedrockRequest);
+      if (bedrockResponse.stopReason === "tool_use" ||
+          bedrockResponse.output?.message?.content?.some((block) => block?.toolUse !== undefined)) {
+        throw new ToolConversationError("tool_protocol");
+      }
+      responseText = extractResponseText(bedrockResponse).trim();
+      if (!responseText) {
+        throw new ChatServiceError("EmptyBedrockResponse");
+      }
+      ({ usage, stopReason } = bedrockResponse);
     }
-
+    const bedrockLatency = toolStats?.bedrockLatencyMs ??
+      Math.max(0, (dependencies.nowMs ?? Date.now)() - bedrockStartedAt);
     const timestamp = (dependencies.nowMs ?? Date.now)();
-    const usage = bedrockResponse.usage;
     const turnId = (dependencies.generateTurnId ?? randomUUID)();
 
     await repository.saveTurn(createTurnItem({
@@ -160,7 +181,7 @@ export async function handleChat(
       prompt,
       responseText,
       modelId,
-      bedrockResponse,
+      usage,
       retentionDays: config.retentionDays,
     }));
 
@@ -178,6 +199,7 @@ export async function handleChat(
         { name: "ChatSuccessCount", unit: "Count", value: 1 },
         { name: "BedrockLatency", unit: "Milliseconds", value: bedrockLatency },
         ...usageMetrics(usage),
+        ...toolMetrics(toolStats),
         ...(boundedContext.truncated
           ? [{ name: "ContextTruncatedCount", unit: "Count" as const, value: 1 }]
           : []),
@@ -189,7 +211,7 @@ export async function handleChat(
       timestamp,
       response: responseText,
       usage: usage ?? {},
-      stopReason: bedrockResponse.stopReason,
+      stopReason,
     };
 
     return jsonResponse(200, responseBody);
@@ -204,6 +226,11 @@ export async function handleChat(
         failureCategory: failure.category,
         metrics: [
           { name: "ChatFailureCount", unit: "Count", value: 1 },
+          ...toolMetrics(toolStats),
+          ...usageMetrics(toolStats?.usage),
+          ...(toolStats
+            ? [{ name: "BedrockLatency", unit: "Milliseconds" as const, value: toolStats.bedrockLatencyMs }]
+            : []),
           ...(failure.category === "bedrock_retryable"
             ? [{ name: "BedrockThrottleCount", unit: "Count" as const, value: 1 }]
             : []),
@@ -229,6 +256,10 @@ interface ChatFailure {
 
 function classifyChatFailure(error: unknown): ChatFailure {
   const errorName = getErrorName(error);
+
+  if (error instanceof ToolConversationError) {
+    return { statusCode: 502, publicError: "Chat request failed", category: error.category };
+  }
 
   if (error instanceof UnauthorizedChatRequestError) {
     return {
@@ -392,7 +423,7 @@ function createTurnItem(input: {
   prompt: string;
   responseText: string;
   modelId: string;
-  bedrockResponse: ConverseCommandOutput;
+  usage: ConverseCommandOutput["usage"];
   retentionDays: number;
 }): ChatTurnItem {
   const item: ChatTurnItem = {
@@ -406,7 +437,7 @@ function createTurnItem(input: {
     expires_at: Math.floor(input.timestamp / 1000) + input.retentionDays * 24 * 60 * 60,
   };
 
-  const usage = input.bedrockResponse.usage;
+  const { usage } = input;
   if (typeof usage?.inputTokens === "number" && Number.isFinite(usage.inputTokens)) {
     item.input_tokens = Number(usage.inputTokens);
   }
@@ -440,6 +471,20 @@ function usageMetrics(usage: ConverseCommandOutput["usage"]): MetricValue[] {
   ].filter((metric): metric is MetricValue => (
     typeof metric.value === "number" && Number.isFinite(metric.value)
   ));
+}
+
+function toolMetrics(stats: ToolConversationStats | undefined): MetricValue[] {
+  if (!stats) {
+    return [];
+  }
+  return [
+    { name: "ToolRequestCount", unit: "Count", value: stats.requests },
+    { name: "ToolRoundCount", unit: "Count", value: stats.rounds },
+    { name: "ToolFailureCount", unit: "Count", value: stats.failures },
+    ...(stats.usageIncomplete
+      ? [{ name: "ToolUsageIncompleteCount", unit: "Count" as const, value: 1 }]
+      : []),
+  ];
 }
 
 function emitMetrics(input: {

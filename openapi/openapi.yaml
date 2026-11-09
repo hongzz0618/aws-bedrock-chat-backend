@@ -86,6 +86,7 @@ components:
         response:
           type: string
         usage:
+          description: Token usage aggregated across model calls when Tool Calling is enabled.
           $ref: "#/components/schemas/Usage"
         stopReason:
           type: string
@@ -147,7 +148,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "502":
-          description: Upstream model response failure
+          description: Upstream model response failure or tool orchestration failure
           content:
             application/json:
               schema:
