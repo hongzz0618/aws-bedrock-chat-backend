@@ -105,7 +105,33 @@ Common responses:
 
 OpenAPI documentation is in `openapi/openapi.yaml`.
 
+## Bedrock Converse Tool Calling
+
+Bedrock Converse Tool Calling is implemented for authenticated `POST /chat`.
+Two read-only tools return deterministic simulated AWS data:
+
+- `get_sqs_queue_status` returns queue counts for the `orders-demo` alias.
+- `get_lambda_function_status` returns function metrics for the `chat-demo` alias.
+
+The tools read fixed fixtures and do not query live SQS, Lambda, or CloudWatch
+data. `TOOL_CALLING_ENABLED` defaults to false. Only server-side configuration
+can set it to `true`. Terraform-managed activation has not been implemented.
+
+Lambda sends the user's chat request to Bedrock. When Bedrock returns a
+`toolUse` request, Lambda validates the tool name and arguments, runs the
+allowlisted fixture, and sends the simulated
+`toolResult` back to Bedrock. The backend labels the final answer as simulated
+when it uses fixture data. DynamoDB stores only the original prompt and final
+answer as conversation content before Lambda returns the answer to the user.
+
+Mocked [Vitest tests](tests/toolConversation.test.ts) cover tool dispatch,
+validation, execution limits, and failure handling. The
+[implementation PR passed GitHub Actions CI](https://github.com/hongzz0618/aws-bedrock-chat-backend/actions/runs/42599175524).
+Live Bedrock Tool Calling integration has not been verified.
+
 ## Live AWS Validation
+
+The evidence in this section covers the earlier text-only chat implementation.
 
 The dev environment was deployed and validated in `eu-west-1`, then destroyed
 after the validation window. Terraform managed 35 project resources; the final
@@ -322,5 +348,5 @@ CI runs these checks without AWS credentials or deployment.
 - Cost controls are alerts and bounded request inputs, not hard spend enforcement.
 - DynamoDB TTL is asynchronous.
 - The API does not include RAG, vector storage, streaming, frontend UI, file
-  uploads, tool calling, per-user quota enforcement, WAF, custom domains,
+  uploads, per-user quota enforcement, WAF, custom domains,
   multi-region deployment, or automatic deployment.
