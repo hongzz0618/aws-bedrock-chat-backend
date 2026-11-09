@@ -108,6 +108,44 @@ describe("runbook retrieval evaluation", () => {
   });
 });
 
+// Additional fixed probes; keep the original 24-question benchmark unchanged.
+const finalEvaluation = [
+  { category: "paraphrase", query: "Workers cannot keep up with SQS messages. What should I investigate?", expected: ["sqs-backlog.consumers"] },
+  { category: "multi-topic", query: "Lambda throttling and SQS backlog: what should I check?", expected: ["lambda-failures.throttling", "sqs-backlog.consumers"] },
+  { category: "time-guidance", query: "How should I troubleshoot current Lambda throttling?", expected: ["lambda-failures.throttling"] },
+  { category: "time-guidance", query: "What should I check now for an SQS backlog?", expected: ["sqs-backlog.consumers"] },
+  { category: "configuration", query: "How many retries should I allow before moving a message to the DLQ?", expected: ["retry-dlq.policy"], knownMiss: true },
+  { category: "configuration", query: "How many receives should I configure for maxReceiveCount?", expected: ["retry-dlq.policy"] },
+  { category: "recovery", query: "How can I safely replay quarantined SQS messages?", expected: ["retry-dlq.redrive"] },
+  { category: "telemetry", query: "How many retries occurred in my SQS queue today?", expected: [] },
+  { category: "telemetry", query: "How many retries should I allow, and how many Lambda Errors occurred today?", expected: [] },
+  { category: "telemetry", query: "How many receives should I configure for maxReceiveCount, and show my live SQS backlog?", expected: [] },
+  { category: "telemetry", query: "How many Lambda Errors can you see today?", expected: [] },
+  { category: "telemetry", query: "How many Lambda Errors occurred and how many receives should I configure for maxReceiveCount?", expected: [] },
+  { category: "outside", query: "How do I configure Kubernetes autoscaling?", expected: [] },
+  { category: "unsupported-related", query: "How do I configure Lambda container image signing failures?", expected: [] },
+  { category: "insufficient", query: "Lambda SQS", expected: [] },
+  { category: "empty", query: "", expected: [] },
+];
+
+it("reports final retrieval probes including known misses and false positives", () => {
+  const results = finalEvaluation.map((entry) => {
+    const selected = runbookRetriever.retrieve({ query: entry.query, maxChunks: 3, maxEvidenceChars: 3000 });
+    const ids = selected.map((c) => c.chunkId);
+    const correct = entry.expected.length ? entry.expected.every((id) => ids.includes(id)) : ids.length === 0;
+    return { category: entry.category, query: entry.query, selected: ids.join(","), correct,
+      miss: entry.expected.length > 0 && !correct, falsePositive: entry.expected.length === 0 && ids.length > 0,
+      toleratedMiss: entry.knownMiss === true && ids.length === 0 };
+  });
+  console.table(results);
+  expect(results.filter((result) => !result.correct && !result.toleratedMiss)).toEqual([]);
+});
+
+it("does not classify modal count guidance as telemetry when evidence matches", () => {
+  const retriever = createRunbookRetriever([fixture("test.a", { title: "DLQ retry guidance", keywords: ["retries"] })]);
+  expect(retriever.retrieve({ query: finalEvaluation[4].query, ...options })).toHaveLength(1);
+});
+
 function fixture(chunkId: string, overrides: Partial<RunbookChunk> = {}): RunbookChunk {
   return {
     documentId: "test", version: "1", chunkId, title: "Test runbook",

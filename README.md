@@ -121,6 +121,8 @@ Terraform checks.
 - [AWS validation evidence](docs/evidence/) contains the earlier text-only
   deployment screenshots.
 
+RAG Phase 1 uses three bundled Runbooks (SQS backlog, Lambda failures, retry/DLQ
+recovery) with deterministic English keyword retrieval; no embeddings or live telemetry.
 Runbook guidance is available with `RAG_ENABLED=true` (disabled by default) and
 `POST /chat` with `{"mode":"runbook","prompt":"How do I investigate Lambda throttling?"}`.
 Runbook requests reject `system_prompt` and `history_turns`, skip history and tools,
@@ -133,6 +135,13 @@ No match returns a deterministic abstention with `sources: []`, `usage: {}` and 
 session; later regular chat in that session can read them. Omitting `mode` retains
 regular chat behavior. Retrieval is English keyword based; mocked tests do not
 establish model grounding quality or prompt-injection resistance.
+
+Terraform exposes `rag_enabled` in `live/dev` (boolean, default `false`) as the
+string environment variable `RAG_ENABLED`. Set `rag_enabled = true` only for a
+future approved deployment; changing a local tfvars file alone does not activate it.
+See [offline evaluation and live checklist](docs/rag-phase1-evaluation.md) for
+measured results, the remaining retry/DLQ paraphrase miss, and approval requirements.
+Model-written citations in response text are not validated by the server.
 
 This is a backend reference. Streaming and a frontend are outside the
 current implementation. DynamoDB TTL deletion is asynchronous, and budget

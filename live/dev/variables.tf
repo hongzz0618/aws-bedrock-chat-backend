@@ -96,3 +96,10 @@ variable "tags" {
     Domain = "genai"
   }
 }
+
+variable "rag_enabled" {
+  description = "Enable Runbook guidance; keep disabled until approved validation."
+  type        = bool
+  default     = false
+  nullable    = false
+}

@@ -79,6 +79,7 @@ module "lambda_api" {
     CHAT_TABLE          = module.chat_table.table_name
     ENVIRONMENT         = var.env
     MODEL_ID            = local.bedrock_model_id
+    RAG_ENABLED         = tostring(var.rag_enabled)
     HISTORY_TURNS       = "10"
     MAX_CONTEXT_CHARS   = tostring(var.max_context_chars)
     CHAT_RETENTION_DAYS = tostring(var.chat_retention_days)

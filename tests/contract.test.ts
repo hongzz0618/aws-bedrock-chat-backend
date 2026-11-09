@@ -167,6 +167,22 @@ function jsonResponseSchema(path: string, method: string, status: number): JsonS
   return schema;
 }
 
+it("statically checks the default and opt-in RAG flag wiring to the Lambda environment", () => {
+  const liveVariables = readFileSync(join(root, "live/dev/variables.tf"), "utf8");
+  const lambdaMain = readFileSync(join(root, "modules/lambda_function/main.tf"), "utf8");
+  const flag = liveVariables.match(/^variable "rag_enabled"\s*\{([^}]*)\}/m)?.[1] ?? "";
+  const lambda = liveMain.match(/^module "lambda_api"\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
+  const environment = lambda.match(/^\s*environment\s*=\s*\{([^}]*)\}/m)?.[1] ?? "";
+  const resource = lambdaMain.match(/^resource "aws_lambda_function" "this"\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
+
+  expect(flag).toMatch(/^\s*type\s*=\s*bool\s*$/m);
+  expect(flag).toMatch(/^\s*default\s*=\s*false\s*$/m);
+  expect(lambda).toMatch(/^\s*source\s*=\s*"\.\.\/\.\.\/modules\/lambda_function"\s*$/m);
+  // The expression converts either boolean to its Terraform string value.
+  expect(environment).toMatch(/^\s*RAG_ENABLED\s*=\s*tostring\(var\.rag_enabled\)\s*$/m);
+  expect(resource).toMatch(/^\s*environment\s*\{\s*variables\s*=\s*var\.environment\s*\}/m);
+});
+
 describe("OpenAPI contract", () => {
   it("parses as OpenAPI 3.1 with a Cognito bearer JWT security scheme", () => {
     expect(openApi.openapi).toBe("3.1.0");
