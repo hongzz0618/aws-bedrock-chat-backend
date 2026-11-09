@@ -29,7 +29,7 @@ function createDefaultChatDependencies(): ChatDependencies {
   return {
     config,
     repository: new DynamoDbChatRepository(config.chatTable, config.awsRegion),
-    bedrockClient: new AwsBedrockConverseClient(config.awsRegion),
+    bedrockClient: new AwsBedrockConverseClient(config.awsRegion, config.toolCallingEnabled),
   };
 }
 
@@ -43,7 +43,10 @@ export function createHandler(
 ) {
   const hasInjectedChatDependencies = Object.keys(dependencies).length > 0;
 
-  return async function handleEvent(event: HttpEvent): Promise<LambdaResponse> {
+  return async function handleEvent(
+    event: HttpEvent,
+    context?: { getRemainingTimeInMillis(): number },
+  ): Promise<LambdaResponse> {
     const method = getHttpMethod(event);
     const path = getRawPath(event);
 
@@ -60,6 +63,7 @@ export function createHandler(
       return handleChat(
         event,
         hasInjectedChatDependencies ? dependencies : defaultChatDependencies(),
+        context && (() => context.getRemainingTimeInMillis()),
       );
     }
 
