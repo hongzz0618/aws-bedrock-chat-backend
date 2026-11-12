@@ -51,6 +51,10 @@ describe("terraform authenticated API configuration", () => {
   const liveMain = readRepoFile("live/dev/main.tf");
   const observabilityMain = readRepoFile("modules/observability/main.tf");
 
+  it("passes the dev throttling settings to the HTTP API module", () => {
+    expect(liveMain).toMatch(/throttling\s*=\s*var\.api_throttling/);
+  });
+
   it("defines a JWT authorizer and applies it only to POST /chat", () => {
     expect(apiMain).toContain('resource "aws_apigatewayv2_authorizer" "jwt"');
     expect(apiMain).toContain('authorizer_type  = "JWT"');

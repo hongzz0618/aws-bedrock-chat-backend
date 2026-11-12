@@ -19,3 +19,8 @@
 # chat_retention_days = 7
 # max_context_chars = 24000
 # rag_enabled = false # Opt in only for approved Runbook validation.
+# tool_calling_enabled = false # Opt in only for approved simulated Tool Calling validation.
+# api_throttling = {
+#   rate_limit  = 2
+#   burst_limit = 5
+# }

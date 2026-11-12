@@ -65,6 +65,21 @@ resource "aws_iam_role_policy_attachment" "attach_ddb" {
 }
 
 # 5) Lambda (TypeScript build packaged in build/lambda.zip)
+locals {
+  lambda_environment = {
+    CHAT_TABLE           = module.chat_table.table_name
+    ENVIRONMENT          = var.env
+    MODEL_ID             = local.bedrock_model_id
+    RAG_ENABLED          = tostring(var.rag_enabled)
+    TOOL_CALLING_ENABLED = tostring(var.tool_calling_enabled)
+    HISTORY_TURNS        = "10"
+    MAX_CONTEXT_CHARS    = tostring(var.max_context_chars)
+    CHAT_RETENTION_DAYS  = tostring(var.chat_retention_days)
+    TEMPERATURE          = "0.2"
+    MAX_TOKENS           = "1024"
+  }
+}
+
 module "lambda_api" {
   source             = "../../modules/lambda_function"
   function_name      = "${var.project}-${local.lambda_fn}"
@@ -75,18 +90,8 @@ module "lambda_api" {
   memory_size        = 256
   timeout_seconds    = 15
   log_retention_days = 14
-  environment = {
-    CHAT_TABLE          = module.chat_table.table_name
-    ENVIRONMENT         = var.env
-    MODEL_ID            = local.bedrock_model_id
-    RAG_ENABLED         = tostring(var.rag_enabled)
-    HISTORY_TURNS       = "10"
-    MAX_CONTEXT_CHARS   = tostring(var.max_context_chars)
-    CHAT_RETENTION_DAYS = tostring(var.chat_retention_days)
-    TEMPERATURE         = "0.2"
-    MAX_TOKENS          = "1024"
-  }
-  tags = var.tags
+  environment        = local.lambda_environment
+  tags               = var.tags
 }
 
 # 6) API Gateway HTTP v2 routes for /health and /chat
@@ -95,6 +100,7 @@ module "api_http" {
   name               = "${local.name_prefix}-http"
   lambda_arn         = module.lambda_api.lambda_invoke_arn
   lambda_name        = module.lambda_api.function_name
+  throttling         = var.api_throttling
   cors_allow_origins = ["*"]
   cors_allow_methods = ["GET", "POST", "OPTIONS"]
   cors_allow_headers = ["Authorization", "Content-Type"]
