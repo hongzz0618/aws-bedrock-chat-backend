@@ -5,6 +5,8 @@
   "description": "Authenticated TypeScript GenAI backend on AWS with Cognito, API Gateway JWT authorization, Amazon Bedrock, user-scoped DynamoDB history, Terraform, and observability.",
   "scripts": {
     "build": "tsc",
+    "runbooks:generate": "node scripts/generate_runbook_corpus.mjs",
+    "runbooks:demo": "npm run build --silent && node scripts/demo_runbooks.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "contract:validate": "node scripts/validate_openapi.mjs",
