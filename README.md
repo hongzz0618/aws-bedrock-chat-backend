@@ -2,179 +2,91 @@
 
 [![CI](https://github.com/hongzz0618/aws-bedrock-chat-backend/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hongzz0618/aws-bedrock-chat-backend/actions/workflows/ci.yml)
 
-## Project Overview
+A serverless TypeScript API for persistent chat and Runbook-based troubleshooting on AWS. The engineering problem is how to give a model useful context while keeping each user's conversation private and bounding the work each request can trigger.
 
-A TypeScript serverless chat API that connects authenticated users to Amazon
-Bedrock Converse and keeps each user's conversation history isolated. It
-demonstrates how to build an AI backend with bounded requests, persistent
-sessions, and operational telemetry on AWS.
-
-## Key Features
-
-- **Authentication and isolation.** API Gateway validates Cognito JWTs for
-  chat. Lambda derives user identity from the authenticated JWT `sub` claim.
-  DynamoDB history is scoped to that user and session, so users can reuse the
-  same session ID without sharing history.
-  Clients cannot supply their own user identity or choose the model.
-- **Bounded conversations.** Lambda validates request fields, selects recent
-  complete turns within a character budget, and stores the prompt and final
-  answer with a DynamoDB TTL.
-- **Bedrock Tool Calling.** An optional, bounded Converse loop validates model
-  requests and runs two allowlisted, simulated tools.
-- **Operations.** CloudWatch receives structured logs and EMF metrics for
-  requests, failures, latency, and token usage. Lambda logs omit JWTs, prompts,
-  chat history, and raw tool results. Terraform defines the dev infrastructure.
+- **Chat.** API Gateway validates Cognito JWTs. Lambda uses the authenticated `sub` and session ID to load recent conversation turns from DynamoDB, calls Amazon Bedrock Converse, and saves the completed turn with a TTL.
+- **Runbook RAG.** Lambda retrieves excerpts from a small, versioned corpus of AWS troubleshooting Runbooks. The response includes structured references to the excerpts sent to Bedrock. When no evidence fits, Lambda returns a fixed abstention without calling the model.
+- **Simulated Tool Calling.** Regular chat can opt into a bounded Converse loop for two allowlisted tools. `get_sqs_queue_status` and `get_lambda_function_status` use synthetic fixtures for `orders-demo` and `chat-demo`. The backend labels fixture-based answers as simulated.
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    Client -->|"Sign in"| Cognito["Amazon Cognito"]
-    Cognito -->|"JWT"| Client
-    Client -->|"HTTPS"| API["API Gateway HTTP API"]
-    API -->|"JWT required for POST /chat"| Lambda["TypeScript Lambda"]
-    Lambda <-->|"Converse"| Bedrock["Amazon Bedrock"]
-    Lambda <-->|"User and session history + TTL"| DynamoDB[("DynamoDB")]
-    Lambda -->|"JSON logs and EMF metrics"| CloudWatch["CloudWatch"]
+flowchart TD
+    Client <-->|"Sign-in / JWT"| Cognito["Amazon Cognito"]
+    Client -->|"GET /health (public) or POST /chat (JWT)"| Gateway["API Gateway HTTP API"]
+    Gateway --> Lambda["TypeScript Lambda"]
+    Lambda -->|"Regular chat"| Chat["Bounded session context"]
+    Chat --> Bedrock["Amazon Bedrock Converse"]
+    Chat -->|"Optional Tool Calling"| Tools["Allowlisted fixture loop"]
+    Tools <-->|"Converse with toolUse / toolResult"| Bedrock
+
+    Runbooks["Versioned Markdown Runbooks"] -->|"Local corpus generation"| Corpus["Corpus bundled in Lambda"]
+    Corpus --> Retrieve["Deterministic keyword retrieval"]
+    Lambda -->|"Runbook mode"| Retrieve
+    Retrieve -->|"Matching excerpts"| Ground["Grounded request + source metadata"]
+    Ground --> Bedrock
+    Retrieve -->|"No usable evidence"| Abstain["Deterministic abstention"]
+    Bedrock --> Result["API response"]
+    Ground -->|"Structured sources"| Result
+    Abstain --> Result
+
+    Chat -->|"Read recent turns by JWT sub and session"| History[("DynamoDB")]
+    Result -->|"Persist turn with TTL"| History
+    Result -->|"Answer and sources when applicable"| Client
+    Gateway -->|"Access logs"| CloudWatch["CloudWatch"]
+    Lambda -->|"Structured logs and EMF metrics"| CloudWatch
 ```
 
-For chat, Lambda loads bounded history before calling Bedrock and writes a turn
-after it receives a non-empty final answer. The
-[session isolation ADR](docs/adr/001-authenticated-session-isolation.md) and
-[context and retention ADR](docs/adr/002-bounded-context-and-retention.md)
-explain the storage and context decisions.
+## Engineering decisions
 
-## API & Tool Calling
-
-| Endpoint | Access | Purpose |
-| --- | --- | --- |
-| `GET /health` | Public | Liveness check |
-| `POST /chat` | Cognito bearer JWT | Send a prompt and optionally reuse a session |
-
-For an approved deployment, set `API_URL` and `JWT` in your shell before using
-this example:
-
-```bash
-curl -X POST "${API_URL}/chat" \
-  -H "Authorization: Bearer ${JWT}" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id":"demo-session","prompt":"Give a short greeting."}'
-```
-
-A successful response includes the session ID, answer, and usage metadata.
-See [OpenAPI](openapi/openapi.yaml) for request limits and error responses.
-
-### Simulated tools
-
-| Tool | Fixture data |
+| Decision | Reason and trade-off |
 | --- | --- |
-| `get_sqs_queue_status` | Queue counts for `orders-demo` |
-| `get_lambda_function_status` | Function metrics for `chat-demo` |
+| Identity comes from the JWT `sub` | The DynamoDB partition key is the authenticated user. An encoded session prefix keeps sessions separate within that partition. Clients can reuse the same session ID across accounts. |
+| Bounded context and retention | Chat sends recent whole turns within a character budget. Runbook mode skips history and tools, with up to 3 whole excerpts, 3,000 evidence characters and 12,000 model-input characters. TTL removes old turns asynchronously. |
+| Bundled keyword retrieval | Three curated English Runbooks cover SQS backlog, Lambda failures and retry/DLQ recovery. Retrieval is reproducible and requires no indexing service. Updates need a rebuild and deployment, and unfamiliar paraphrases can miss. |
+| Separate feature flags | Terraform keeps `rag_enabled` and `tool_calling_enabled` off by default. Each feature can be evaluated or rolled back independently. |
+| Bounded model and failure paths | Lambda validates requests, scopes IAM to the configured Bedrock resources and history table, and caps the tool loop at three Converse calls. Invalid inputs fail before model work. Responses use sanitized errors and a failed request does not write a partial turn. |
 
-When enabled, Lambda sends tool definitions to Bedrock, validates any
-`toolUse` request, and returns a matching `toolResult` before asking Bedrock
-for the final answer. The loop bounds calls, rounds, requests, execution time,
-payload sizes, and generated tokens. DynamoDB stores the original prompt and
-final answer as conversation content.
+See the [architecture decisions](docs/adr/) and the [OpenAPI contract](openapi/openapi.yaml).
 
-Both tools are read-only and use deterministic fixtures. They make no live
-SQS, Lambda, or CloudWatch queries. The backend labels answers that use fixture
-data as simulated. The server-side `TOOL_CALLING_ENABLED` flag defaults to
-`false`. Terraform-managed activation is deferred.
+## Observability and cost
 
-## Testing & Validation
+CloudWatch receives API access logs and structured Lambda logs. Application EMF metrics cover requests, failures, latency, token usage and tool activity. Logs omit JWTs, prompts, conversation history and model/tool output. Terraform keeps the existing budget alerts and applies configurable, best-effort dev stage throttling, with a default target of 2 requests per second and a burst of 5. Budget notifications and throttling provide visibility and traffic control. Neither enforces a hard spending cap. [AWS HTTP API throttling](https://docs.aws.amazon.com/apigateway/latest/developerguide/http-api-throttling.html), [AWS Budgets](https://docs.aws.amazon.com/cost-management/latest/userguide/budgets-managing-costs.html)
 
-- **Local and CI.** Vitest covers chat behavior, session isolation, the API
-  contract, and [mocked Tool Calling](tests/toolConversation.test.ts).
-  [CI](.github/workflows/ci.yml) also checks the Lambda build and package and
-  runs Terraform plan tests with a mocked AWS provider.
-- **Prior live AWS validation.** A temporary dev deployment in `eu-west-1`
-  verified the earlier text-only chat path, including Cognito authorization,
-  Bedrock invocation, DynamoDB history and TTL metadata, and CloudWatch
-  telemetry. The environment was torn down after validation. The
-  [validation report](docs/deployment-validation.md) preserves the results and
-  sanitized screenshots.
-- **Live Tool Calling remains unverified.** The
-  [AWS integration checklist](docs/aws-integration-verification-checklist.md)
-  describes a future controlled validation session.
+## Validation status
 
-## Local Development
+| Evidence | What it covers |
+| --- | --- |
+| [Offline tests and RAG evaluation](docs/rag-phase1-evaluation.md) | The fixed 24-question retrieval benchmark passed all 24 cases, including six abstentions. Additional probes found one retry/DLQ paraphrase miss. Mocked tests cover grounding request construction, no-call abstention, tool execution and failure paths. |
+| [Earlier AWS validation](docs/deployment-validation.md) | A temporary dev deployment verified public health, JWT rejection, authenticated text chat, DynamoDB persistence and CloudWatch delivery. The environment was torn down. |
+| [Controlled AWS validation checklist](docs/aws-integration-verification-checklist.md) | Live RAG grounding, simulated tool use with the real model, current deployment settings and the new throttling configuration await validation. |
 
-Use Node.js 22 to match CI. These checks run without AWS credentials:
+## Local verification
+
+Use Node.js 22 and Terraform 1.9.8 to match [CI](.github/workflows/ci.yml). These checks run without AWS credentials. Dependency installation, the npm audit and Terraform provider initialization may need access to public registries.
 
 ```bash
 npm ci
 npm run typecheck
 npm test
 npm run contract:validate
+npm run test:contract
 npm run build
-```
-
-See the [CI workflow](.github/workflows/ci.yml) for the Lambda packaging and
-Terraform checks.
-
-## Runbook maintenance and offline demo
-
-Edit the Markdown files in [`docs/runbooks/`](docs/runbooks/). Keep existing
-`documentId` and `chunkId` values stable, and increment the quoted version
-(for example, `"1"` to `"2"`) when guidance or retrieval metadata changes.
-Use one `#` document title and one `##` heading per excerpt. Keep each
-heading's YAML comment with its `chunkId` and `keywords` list directly below
-the heading. Leave a blank line before the excerpt. Keep prerequisites and
-warnings in the same excerpt as the procedure.
-
-```bash
-npm run runbooks:generate
-npm run typecheck
-npm test
+npm audit --omit=dev
+bash scripts/package_lambda.sh
+npm run artifacts:verify
+terraform fmt -check -recursive
+terraform -chdir=live/dev init -backend=false -input=false
+terraform -chdir=live/dev validate
+terraform -chdir=live/dev test
 npm run runbooks:demo
-npm run runbooks:demo -- "How do I investigate Lambda throttling?"
+node scripts/smoke_aws.mjs baseline --dry-run
 ```
 
-Generation validates metadata and IDs, reads files in filename order and
-preserves section order. Commit the Markdown and the generated
-`src-ts/runbookCorpus.ts` together. The test suite checks that the checked-in
-corpus matches a fresh generation. Lambda imports the compiled corpus, so
-Runbook updates take effect after a rebuild and deployment.
+To update the corpus, edit [the Markdown Runbooks](docs/runbooks/), keep document and chunk IDs stable, bump the version when guidance or retrieval metadata changes, and run `npm run runbooks:generate`. Review the generated corpus together with the Markdown changes. The demo shows selected excerpts and abstention offline.
 
-The demo prints the question, selected excerpts, and their source metadata.
-Its default questions also show the same abstention text used by chat when
-there is no evidence. The demo runs locally without AWS credentials and
-provides retrieval evidence only. The source format supports curated
-English excerpts with explicit section boundaries. Automatic ingestion,
-semantic search, live telemetry, and model answer evaluation are outside
-this workflow.
+## Scope and deployment
 
-## Documentation & Limitations
+This backend uses a curated corpus and simulated telemetry. Structured sources identify the excerpts supplied to the model. Claim-level grounding and prompt-injection resistance still require the live evaluation. Vector search, runtime ingestion, streaming, a frontend and real AWS telemetry tools are deferred.
 
-- [Architecture decisions](docs/adr/) cover session isolation, bounded context,
-  retention, and Bedrock sampling compatibility.
-- [Dev infrastructure](live/dev/) contains the Terraform configuration.
-- [AWS validation evidence](docs/evidence/) contains the earlier text-only
-  deployment screenshots.
-
-RAG Phase 1 uses three bundled Runbooks (SQS backlog, Lambda failures, retry/DLQ
-recovery) with deterministic English keyword retrieval; no embeddings or live telemetry.
-Runbook guidance is available with `RAG_ENABLED=true` (disabled by default) and
-`POST /chat` with `{"mode":"runbook","prompt":"How do I investigate Lambda throttling?"}`.
-Runbook requests reject `system_prompt` and `history_turns`, skip history and tools,
-and use at most 3 complete excerpts, 3000 evidence-text characters and 12000 total
-model-input characters including instructions and source labels (UTF-16 code units).
-Responses include `sources` with document/chunk IDs, title, section and version for
-the excerpts actually supplied, not independent verification of every answer claim.
-No match returns a deterministic abstention with `sources: []`, `usage: {}` and no
-`stopReason` or model call. Answers and abstentions are saved to the JWT user's
-session; later regular chat in that session can read them. Omitting `mode` retains
-regular chat behavior. Retrieval is English keyword based; mocked tests do not
-establish model grounding quality or prompt-injection resistance.
-
-Terraform exposes `rag_enabled` in `live/dev` (boolean, default `false`) as the
-string environment variable `RAG_ENABLED`. Set `rag_enabled = true` only for a
-future approved deployment; changing a local tfvars file alone does not activate it.
-See [offline evaluation and live checklist](docs/rag-phase1-evaluation.md) for
-measured results, the remaining retry/DLQ paraphrase miss, and approval requirements.
-Model-written citations in response text are not validated by the server.
-
-This is a backend reference. Streaming and a frontend are outside the
-current implementation. DynamoDB TTL deletion is asynchronous, and budget
-alerts and request limits do not enforce a hard spending cap.
+Use the [dev Terraform root](live/dev/), [example settings](live/dev/terraform.tfvars.example) and [AWS validation and cleanup checklist](docs/aws-integration-verification-checklist.md) for the next approved deployment.

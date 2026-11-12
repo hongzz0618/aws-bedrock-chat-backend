@@ -1,6 +1,13 @@
 variable "name" { type = string }
 variable "lambda_arn" { type = string }
 variable "lambda_name" { type = string }
+variable "throttling" {
+  description = "Default route throttling targets for the HTTP API stage."
+  type = object({
+    rate_limit  = number
+    burst_limit = number
+  })
+}
 variable "routes" {
   type = map(object({
     authorization_type = optional(string, "NONE")

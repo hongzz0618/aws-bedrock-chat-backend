@@ -141,6 +141,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+        "429":
+          description: Request throttled by API Gateway
   /chat:
     post:
       operationId: postChat
@@ -172,6 +174,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Request throttled by API Gateway
         "500":
           description: Internal processing failure
           content:

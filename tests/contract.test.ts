@@ -167,19 +167,19 @@ function jsonResponseSchema(path: string, method: string, status: number): JsonS
   return schema;
 }
 
-it("statically checks the default and opt-in RAG flag wiring to the Lambda environment", () => {
+it.each(["rag_enabled", "tool_calling_enabled"])("wires %s to the Lambda environment", (name) => {
   const liveVariables = readFileSync(join(root, "live/dev/variables.tf"), "utf8");
   const lambdaMain = readFileSync(join(root, "modules/lambda_function/main.tf"), "utf8");
-  const flag = liveVariables.match(/^variable "rag_enabled"\s*\{([^}]*)\}/m)?.[1] ?? "";
+  const flag = liveVariables.match(new RegExp(`^variable "${name}"\\s*\\{([^}]*)\\}`, "m"))?.[1] ?? "";
   const lambda = liveMain.match(/^module "lambda_api"\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
-  const environment = lambda.match(/^\s*environment\s*=\s*\{([^}]*)\}/m)?.[1] ?? "";
+  const environment = liveMain.match(/^\s*lambda_environment\s*=\s*\{([^}]*)\}/m)?.[1] ?? "";
   const resource = lambdaMain.match(/^resource "aws_lambda_function" "this"\s*\{([\s\S]*?)^\}/m)?.[1] ?? "";
 
   expect(flag).toMatch(/^\s*type\s*=\s*bool\s*$/m);
   expect(flag).toMatch(/^\s*default\s*=\s*false\s*$/m);
   expect(lambda).toMatch(/^\s*source\s*=\s*"\.\.\/\.\.\/modules\/lambda_function"\s*$/m);
-  // The expression converts either boolean to its Terraform string value.
-  expect(environment).toMatch(/^\s*RAG_ENABLED\s*=\s*tostring\(var\.rag_enabled\)\s*$/m);
+  expect(lambda).toMatch(/^\s*environment\s*=\s*local\.lambda_environment\s*$/m);
+  expect(environment).toMatch(new RegExp(`^\\s*${name.toUpperCase()}\\s*=\\s*tostring\\(var\\.${name}\\)\\s*$`, "m"));
   expect(resource).toMatch(/^\s*environment\s*\{\s*variables\s*=\s*var\.environment\s*\}/m);
 });
 
@@ -353,10 +353,15 @@ describe("OpenAPI contract", () => {
       "200",
       "400",
       "401",
+      "429",
       "500",
       "502",
       "503",
     ]);
+  });
+
+  it("documents stage throttling on the public health route", () => {
+    expect(openApi.paths["/health"].get.responses["429"]).toBeDefined();
   });
 
   it("validates representative handler responses against OpenAPI schemas", async () => {

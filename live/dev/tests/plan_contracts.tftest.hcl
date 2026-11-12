@@ -58,6 +58,66 @@ run "root_lambda_dynamodb_policy_contract" {
   }
 }
 
+run "dev_defaults" {
+  command = plan
+
+  assert {
+    condition     = local.lambda_environment.RAG_ENABLED == "false" && local.lambda_environment.TOOL_CALLING_ENABLED == "false"
+    error_message = "Runbook RAG and simulated Tool Calling must default to off."
+  }
+
+  assert {
+    condition     = var.api_throttling.rate_limit == 2 && var.api_throttling.burst_limit == 5
+    error_message = "Dev throttling must default to 2 requests per second with a burst of 5."
+  }
+}
+
+run "dev_rag_enabled" {
+  command = plan
+
+  variables {
+    rag_enabled = true
+  }
+
+  assert {
+    condition     = local.lambda_environment.RAG_ENABLED == "true" && local.lambda_environment.TOOL_CALLING_ENABLED == "false"
+    error_message = "Enabling RAG must leave simulated Tool Calling off."
+  }
+}
+
+run "dev_tool_calling_enabled" {
+  command = plan
+
+  variables {
+    tool_calling_enabled = true
+  }
+
+  assert {
+    condition     = local.lambda_environment.RAG_ENABLED == "false" && local.lambda_environment.TOOL_CALLING_ENABLED == "true"
+    error_message = "Enabling simulated Tool Calling must leave RAG off."
+  }
+}
+
+run "reject_zero_throttling_rate" {
+  command = plan
+
+  variables {
+    api_throttling = { rate_limit = 0, burst_limit = 5 }
+  }
+
+  expect_failures = [var.api_throttling]
+}
+
+run "reject_fractional_throttling_burst" {
+  command = plan
+
+  variables {
+    api_throttling = { rate_limit = 2, burst_limit = 1.5 }
+  }
+
+  expect_failures = [var.api_throttling]
+}
+
 run "cognito_contract" {
   command = plan
 
@@ -135,6 +195,7 @@ run "api_gateway_contract" {
     cors_allow_origins = ["*"]
     cors_allow_methods = ["GET", "POST", "OPTIONS"]
     cors_allow_headers = ["Authorization", "Content-Type"]
+    throttling         = { rate_limit = 1.5, burst_limit = 4 }
   }
 
   assert {
@@ -160,6 +221,14 @@ run "api_gateway_contract" {
   assert {
     condition     = length(aws_apigatewayv2_stage.default.access_log_settings) == 1
     error_message = "HTTP API access logs must be enabled."
+  }
+
+  assert {
+    condition = (
+      aws_apigatewayv2_stage.default.default_route_settings[0].throttling_rate_limit == 1.5 &&
+      aws_apigatewayv2_stage.default.default_route_settings[0].throttling_burst_limit == 4
+    )
+    error_message = "The stage must use the configured throttling targets."
   }
 
   assert {

@@ -103,3 +103,38 @@ variable "rag_enabled" {
   default     = false
   nullable    = false
 }
+
+variable "tool_calling_enabled" {
+  description = "Enable simulated Tool Calling for regular chat in an approved validation session."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+
+variable "api_throttling" {
+  description = "Default HTTP API route throttling targets for the dev stage."
+  type = object({
+    rate_limit  = number
+    burst_limit = number
+  })
+  default = {
+    rate_limit  = 2
+    burst_limit = 5
+  }
+  nullable = false
+
+  validation {
+    condition     = try(var.api_throttling.rate_limit > 0, false)
+    error_message = "api_throttling.rate_limit must be a positive number of requests per second."
+  }
+
+  validation {
+    condition = try(
+      var.api_throttling.burst_limit >= 1 &&
+      var.api_throttling.burst_limit <= 2147483647 &&
+      floor(var.api_throttling.burst_limit) == var.api_throttling.burst_limit,
+      false
+    )
+    error_message = "api_throttling.burst_limit must be a positive 32-bit integer."
+  }
+}
