@@ -113,6 +113,38 @@ npm run build
 See the [CI workflow](.github/workflows/ci.yml) for the Lambda packaging and
 Terraform checks.
 
+## Runbook maintenance and offline demo
+
+Edit the Markdown files in [`docs/runbooks/`](docs/runbooks/). Keep existing
+`documentId` and `chunkId` values stable, and increment the quoted version
+(for example, `"1"` to `"2"`) when guidance or retrieval metadata changes.
+Use one `#` document title and one `##` heading per excerpt. Keep each
+heading's YAML comment with its `chunkId` and `keywords` list directly below
+the heading. Leave a blank line before the excerpt. Keep prerequisites and
+warnings in the same excerpt as the procedure.
+
+```bash
+npm run runbooks:generate
+npm run typecheck
+npm test
+npm run runbooks:demo
+npm run runbooks:demo -- "How do I investigate Lambda throttling?"
+```
+
+Generation validates metadata and IDs, reads files in filename order and
+preserves section order. Commit the Markdown and the generated
+`src-ts/runbookCorpus.ts` together. The test suite checks that the checked-in
+corpus matches a fresh generation. Lambda imports the compiled corpus, so
+Runbook updates take effect after a rebuild and deployment.
+
+The demo prints the question, selected excerpts, and their source metadata.
+Its default questions also show the same abstention text used by chat when
+there is no evidence. The demo runs locally without AWS credentials and
+provides retrieval evidence only. The source format supports curated
+English excerpts with explicit section boundaries. Automatic ingestion,
+semantic search, live telemetry, and model answer evaluation are outside
+this workflow.
+
 ## Documentation & Limitations
 
 - [Architecture decisions](docs/adr/) cover session isolation, bounded context,

@@ -1,4 +1,5 @@
 import { runbookCorpus, type RunbookChunk } from "./runbookCorpus";
+import { runbookTokens as tokens } from "./runbookTokens.cjs";
 
 export interface RunbookRetrievalRequest {
   readonly query: string;
@@ -19,26 +20,8 @@ export class InvalidRunbookCorpusError extends Error {
 }
 
 const MAX_QUERY_CHARS = 8000;
-const stopWords = new Set((
-  "a an the and or of to in on for from with by as at is are was were be been being " +
-  "do does did how what why when where which who should would could can may must " +
-  "i my we our you your it its this that these those there then than if after before " +
-  "while during so but into out up again still only too not no have has had will " +
-  "check investigate diagnose explain help mean relate set configure fix repair resolve"
-).split(" "));
 // Topic words contribute to ranking, but cannot establish relevant evidence alone.
 const topicWords = new Set("aws amazon sqs lambda dlq queue message function request record".split(" "));
-const variants = new Map([
-  ["throttling", "throttle"], ["throttled", "throttle"], ["throttles", "throttle"],
-  ["retries", "retry"], ["retried", "retry"], ["retrying", "retry"],
-  ["failed", "failure"], ["failing", "failure"], ["failures", "failure"],
-]);
-
-function tokens(value: string): string[] {
-  return (value.toLowerCase().match(/[a-z0-9]+/g) ?? [])
-    .filter((token) => !stopWords.has(token))
-    .map((token) => variants.get(token) ?? (token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token));
-}
 
 function requestsTelemetry(query: string): boolean {
   const time = /\b(now|current|currently|latest|today|live|real[ -]time)\b/i;

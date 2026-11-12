@@ -7,6 +7,7 @@
     "rootDir": "src-ts",
     "outDir": "dist",
     "strict": true,
+    "allowJs": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
